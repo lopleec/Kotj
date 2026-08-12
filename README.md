@@ -1,7 +1,8 @@
 <div align="center">
-  <img src="app/src/main/res/drawable-nodpi/ic_launcher_source.png" width="112" alt="Kotj 图标">
+  <img src="app/src/main/res/drawable-nodpi/ic_launcher_source.png" width="112" alt="Kotj 图标" style="border-radius: 24px;">
   <h1>Kotj</h1>
-  <p>简洁、私密、完全本地的 Material 3 Android 备忘录。</p>
+  <p><strong>面向 Android 的完整本地备忘录</strong></p>
+  <p>Material Design 3 界面 · 类 iOS 备忘录结构 · 丰富文本编辑 · 本地加密</p>
 
   [![Android 8.0+](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](https://developer.android.com/about/versions/oreo)
   [![Kotlin](https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
@@ -9,7 +10,17 @@
   [![GPL-3.0](https://img.shields.io/github/license/lopleec/Kotj)](LICENSE)
 </div>
 
-Kotj 是一款原生 Android 本地备忘录应用，采用 Jetpack Compose 与 Material 3 构建。应用不申请网络权限，笔记、图片、分类和设置均保存在应用私有空间中。
+Kotj 是一款功能完整的原生 Android 备忘录应用。它借鉴 iOS 备忘录清晰直观的信息结构与编辑逻辑，同时使用 Jetpack Compose 和 Material Design 3 构建符合 Android 平台习惯的界面，而不是简单复刻 iOS 外观。
+
+从日常速记到图文长笔记，Kotj 提供富文本、图片、表格、待办、分类、全局搜索、回收站、加密和多格式导入导出等完整能力。应用不申请网络权限，笔记、图片、分类和设置全部保存在设备的应用私有空间中。
+
+## 应用特点
+
+- **专为 Android 构建：** 原生 Kotlin 与 Jetpack Compose，支持 Android 8.0 及以上版本
+- **Material Design 3：** 使用 MD3 组件、动态配色、明暗主题以及符合 Android 习惯的系统交互
+- **类 iOS 备忘录结构：** 熟悉的文件夹分类、笔记列表、最近删除和简洁的连续编辑体验
+- **功能完整：** 富文本、图文混排、表格、列表、待办、搜索、置顶、导入、导出和加密均可直接使用
+- **隐私优先：** 完全本地存储，无网络权限，也不上传笔记或遥测数据
 
 > [!IMPORTANT]
 > 加密密码无法恢复。忘记独立密码、丢失系统解锁密钥或清除应用数据后，相应的加密笔记可能永久无法解密。
@@ -23,7 +34,7 @@ Kotj 是一款原生 Android 本地备忘录应用，采用 Jetpack Compose 与 
 - 安装 GitHub APK 时，Android 可能要求允许浏览器或文件管理器“安装未知应用”
 - 从早期 Debug 版本迁移到正式签名版时，由于签名不同，无法直接覆盖安装；请先导出重要笔记
 
-## 功能
+## 完整功能
 
 ### 编辑
 
