@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Public Android OAuth identifiers from the Google Cloud client registered for
+      com.lopleec.kotj and the formal release signing certificate. Android OAuth
+      clients do not use an embedded client secret; Google Play services verifies
+      the installed package name and certificate before issuing authorization.
+    -->
+    <string name="google_oauth_client_id" translatable="false">346074901829-otamifshbcphq8vh4r5v2c6ik8u1654r.apps.googleusercontent.com</string>
+    <string name="google_cloud_project_id" translatable="false">kotj-505405</string>
+</resources>

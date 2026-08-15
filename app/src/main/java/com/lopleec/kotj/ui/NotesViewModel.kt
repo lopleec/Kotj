@@ -9,6 +9,12 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.google.android.gms.auth.api.identity.Identity
+import com.lopleec.kotj.backup.DriveAuthorizationPurpose
+import com.lopleec.kotj.backup.DriveBackupEngine
+import com.lopleec.kotj.backup.DriveBackupScheduler
+import com.lopleec.kotj.backup.DriveBackupUiState
+import com.lopleec.kotj.backup.GoogleDriveAuthorization
 import com.lopleec.kotj.data.NotesRepository
 import com.lopleec.kotj.data.AttachmentContent
 import com.lopleec.kotj.data.AppSettings
@@ -26,6 +32,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withContext
 
 data class NotesUiState(
@@ -45,6 +52,7 @@ data class NotesUiState(
     val securityOperationInProgress: Boolean = false,
     val canUndo: Boolean = false,
     val canRedo: Boolean = false,
+    val driveBackup: DriveBackupUiState = DriveBackupUiState(),
 )
 
 class NotesViewModel(application: Application) : AndroidViewModel(application) {
@@ -58,6 +66,9 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
     private var importJob: Job? = null
     private var saveImportJob: Job? = null
     private var refreshGeneration = 0L
+    private var pendingDriveAccountEmail: String? = null
+    private var pendingDriveAuthorizationPurpose = DriveAuthorizationPurpose.BACKUP
+    private var driveAuthorizationPending = false
     private val undoHistory = ArrayDeque<NoteDocument>()
     private val redoHistory = ArrayDeque<NoteDocument>()
 
@@ -65,13 +76,20 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
         private set
 
     init {
+        if (state.settings.googleDriveBackupEnabled) {
+            DriveBackupScheduler.configure(application, enabled = true)
+            // Existing password-era installations already have the usable local key. An immediate
+            // run publishes its account recovery record before the user considers reinstalling.
+            DriveBackupScheduler.enqueueNow(application)
+        }
         viewModelScope.launch {
             val hardeningError = withContext(Dispatchers.IO) {
                 runCatching {
+                    DriveBackupEngine(application).cleanupAbandonedRestoreWorkspace()
                     repository.hardenStorage()
                     repository.purgeExpiredTrash(state.settings.trashRetentionDays)
                         .forEach(systemUnlockStore::remove)
-                    systemUnlockStore.cleanupOrphans(repository.allNoteIds())
+                    systemUnlockStore.cleanupOrphans(repository.encryptedNoteIds())
                 }.exceptionOrNull()
             }
             refresh()
@@ -87,6 +105,11 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    override fun onCleared() {
+        resetPendingDriveAuthorization()
+        super.onCleared()
+    }
+
     fun refresh() {
         val generation = ++refreshGeneration
         viewModelScope.launch {
@@ -98,6 +121,7 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
             }.onSuccess { result ->
                 if (generation == refreshGeneration && showingTrash == state.showingTrash) {
                     state = state.copy(categories = result.first, notes = result.second, loading = false)
+                    DriveBackupScheduler.onLocalDataChanged(getApplication())
                 }
             }.onFailure { error ->
                 if (error is CancellationException) throw error
@@ -679,8 +703,21 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun updateSettings(settings: AppSettings) {
+        val previousSettings = state.settings
         settingsRepository.save(settings)
         state = state.copy(settings = settings)
+        if (previousSettings.googleDriveBackupEnabled != settings.googleDriveBackupEnabled) {
+            DriveBackupScheduler.configure(getApplication(), settings.googleDriveBackupEnabled)
+            if (settings.googleDriveBackupEnabled) {
+                refreshDriveBackupState()
+                DriveBackupScheduler.enqueueNow(getApplication())
+            }
+        } else if (
+            settings.googleDriveBackupEnabled &&
+            previousSettings.driveStorageMode != settings.driveStorageMode
+        ) {
+            DriveBackupScheduler.enqueueNow(getApplication())
+        }
         viewModelScope.launch {
             runCatching {
                 withContext(Dispatchers.IO) {
@@ -757,6 +794,261 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
 
     fun showMessage(chinese: String, english: String) {
         state = state.copy(message = tr(chinese, english))
+    }
+
+    fun refreshDriveBackupState() {
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { DriveBackupEngine(getApplication()).state() } }
+                .onSuccess { driveState -> state = state.copy(driveBackup = driveState) }
+                .onFailure { error ->
+                    state = state.copy(
+                        driveBackup = state.driveBackup.copy(lastError = error.message),
+                        message = localizedError(error, "无法读取云端备份状态", "Could not read cloud backup status"),
+                    )
+                }
+        }
+    }
+
+    fun disableDriveBackupKeepingCloud() {
+        if (state.settings.googleDriveBackupEnabled) {
+            updateSettings(state.settings.copy(googleDriveBackupEnabled = false))
+        }
+        resetPendingDriveAuthorization()
+        state = state.copy(
+            driveBackup = state.driveBackup.copy(backupInProgress = false, lastError = null),
+            message = tr(
+                "自动备份已关闭；云端内容和登录状态已保留",
+                "Automatic backup is off; cloud data and sign-in are preserved",
+            ),
+        )
+    }
+
+    /** Returns the connected account that MainActivity must authorize before deletion. */
+    fun disableDriveBackupAndPrepareDeletion(): String? {
+        if (state.settings.googleDriveBackupEnabled) {
+            updateSettings(state.settings.copy(googleDriveBackupEnabled = false))
+        }
+        val accountEmail = state.driveBackup.accountEmail
+        if (!accountEmail.isNullOrBlank()) return accountEmail
+
+        state = state.copy(driveBackup = state.driveBackup.copy(backupInProgress = true, lastError = null))
+        viewModelScope.launch {
+            runCatching { withContext(Dispatchers.IO) { DriveBackupEngine(getApplication()).clearCloudConfiguration() } }
+                .onSuccess { driveState ->
+                    state = state.copy(
+                        driveBackup = driveState,
+                        message = tr(
+                            "自动备份已关闭；没有已绑定账号，本地云端配置已清除",
+                            "Automatic backup is off; no account was connected, so local cloud settings were cleared",
+                        ),
+                    )
+                }
+                .onFailure { error ->
+                    state = state.copy(
+                        driveBackup = state.driveBackup.copy(backupInProgress = false, lastError = error.message),
+                        message = localizedError(
+                            error,
+                            "自动备份已关闭，但无法清除云端配置",
+                            "Automatic backup is off, but cloud settings could not be cleared",
+                        ),
+                    )
+                }
+        }
+        return null
+    }
+
+    fun driveAuthorizationStarted(
+        accountEmail: String,
+        purpose: DriveAuthorizationPurpose = DriveAuthorizationPurpose.BACKUP,
+    ) {
+        resetPendingDriveAuthorization()
+        pendingDriveAccountEmail = accountEmail
+        pendingDriveAuthorizationPurpose = purpose
+        driveAuthorizationPending = true
+        state = state.copy(
+            driveBackup = state.driveBackup.copy(
+                backupInProgress = true,
+                restoreInProgress = purpose == DriveAuthorizationPurpose.RESTORE,
+                lastError = null,
+            ),
+        )
+    }
+
+    fun driveAuthorizationFailed(error: Throwable? = null) {
+        val purpose = pendingDriveAuthorizationPurpose
+        resetPendingDriveAuthorization()
+        state = state.copy(
+            driveBackup = state.driveBackup.copy(
+                backupInProgress = false,
+                restoreInProgress = false,
+                lastError = error?.message,
+            ),
+            message = when {
+                purpose == DriveAuthorizationPurpose.DELETE_CLOUD_DATA && error == null -> tr(
+                    "已取消删除；自动备份保持关闭，云端内容和登录状态未更改",
+                    "Deletion cancelled; automatic backup remains off and cloud data and sign-in were not changed",
+                )
+                purpose == DriveAuthorizationPurpose.DELETE_CLOUD_DATA -> localizedError(
+                    requireNotNull(error),
+                    "自动备份已关闭，但无法授权删除云端内容",
+                    "Automatic backup is off, but cloud deletion could not be authorized",
+                )
+                purpose == DriveAuthorizationPurpose.RESTORE && error != null -> driveRestoreError(error)
+                purpose == DriveAuthorizationPurpose.RESTORE -> tr(
+                    "已取消云端合并",
+                    "Cloud merge was cancelled",
+                )
+                error != null -> localizedError(
+                    error,
+                    "Google Drive 登录失败",
+                    "Google Drive sign-in failed",
+                )
+                else -> null
+            },
+        )
+    }
+
+    fun completeDriveAuthorization(accessToken: String) {
+        if (!driveAuthorizationPending) {
+            state = state.copy(
+                driveBackup = state.driveBackup.copy(backupInProgress = false),
+                message = tr("已忽略过期的 Google 授权结果", "Ignored an expired Google authorization result"),
+            )
+            return
+        }
+        val purpose = pendingDriveAuthorizationPurpose
+        if (purpose == DriveAuthorizationPurpose.BACKUP && !state.settings.googleDriveBackupEnabled) {
+            resetPendingDriveAuthorization()
+            state = state.copy(driveBackup = state.driveBackup.copy(backupInProgress = false))
+            return
+        }
+        val accountEmail = pendingDriveAccountEmail ?: state.driveBackup.accountEmail
+        if (accountEmail.isNullOrBlank()) {
+            driveAuthorizationFailed(IllegalStateException("Google Account email was not returned"))
+            return
+        }
+        state = state.copy(
+            driveBackup = state.driveBackup.copy(
+                backupInProgress = true,
+                restoreInProgress = purpose == DriveAuthorizationPurpose.RESTORE,
+                lastError = null,
+            ),
+        )
+        viewModelScope.launch {
+            when (purpose) {
+                DriveAuthorizationPurpose.DELETE_CLOUD_DATA -> completeDriveCloudDeletion(accessToken, accountEmail)
+                DriveAuthorizationPurpose.RESTORE -> completeDriveRestore(accessToken, accountEmail)
+                DriveAuthorizationPurpose.BACKUP -> {
+                runCatching { DriveBackupEngine(getApplication()).completeAuthorization(accessToken, accountEmail) }
+                    .onSuccess { driveState ->
+                        resetPendingDriveAuthorization()
+                        state = state.copy(
+                            driveBackup = driveState,
+                            message = when {
+                                driveState.restoreRequired && driveState.remoteKeyAvailable -> tr(
+                                    "发现此账号的云端备份，请点击“与云端合并”",
+                                    "Cloud backup found for this account. Tap Merge from cloud",
+                                )
+                                driveState.restoreRequired && driveState.remoteBackupAvailable -> tr(
+                                    "发现旧版备份；请先让创建它的原设备升级并完成一次备份迁移",
+                                    "A legacy backup was found. Update its original device and let it complete one backup migration first",
+                                )
+                                else -> tr(
+                                    "Google Drive 自动备份已启用",
+                                    "Google Drive automatic backup is enabled",
+                                )
+                            },
+                        )
+                        DriveBackupScheduler.configure(getApplication(), state.settings.googleDriveBackupEnabled)
+                    }
+                    .onFailure { error ->
+                        if (error is CancellationException) throw error
+                        resetPendingDriveAuthorization()
+                        state = state.copy(
+                            driveBackup = DriveBackupEngine(getApplication()).state().copy(
+                                backupInProgress = false,
+                                lastError = error.message,
+                            ),
+                            message = localizedError(error, "Google Drive 连接失败", "Could not connect to Google Drive"),
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun completeDriveRestore(accessToken: String, accountEmail: String) {
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val restored = DriveBackupEngine(getApplication()).restoreLatestBackup(
+                    accessToken = accessToken,
+                    accountEmail = accountEmail,
+                )
+                systemUnlockStore.cleanupOrphans(repository.encryptedNoteIds())
+                restored
+            }
+        }.onSuccess { (driveState, result) ->
+            resetPendingDriveAuthorization()
+            state = state.copy(
+                selectedCategoryId = null,
+                showingTrash = false,
+                query = "",
+                editor = null,
+                driveBackup = driveState.copy(backupInProgress = false),
+                loading = true,
+                message = tr(
+                    "云端合并完成：新增 ${result.importedNoteCount} 篇、更新 ${result.updatedNoteCount} 篇、保留本机 ${result.retainedLocalNoteCount} 篇，共 ${result.noteCount} 篇备忘录",
+                    "Cloud merge complete: ${result.importedNoteCount} added, ${result.updatedNoteCount} updated, ${result.retainedLocalNoteCount} kept locally, ${result.noteCount} notes total",
+                ),
+            )
+            refresh()
+            DriveBackupScheduler.configure(getApplication(), state.settings.googleDriveBackupEnabled)
+        }.onFailure { error ->
+            if (error is CancellationException) throw error
+            resetPendingDriveAuthorization()
+            state = state.copy(
+                driveBackup = DriveBackupEngine(getApplication()).state().copy(
+                    backupInProgress = false,
+                    lastError = error.message,
+                ),
+                message = driveRestoreError(error),
+            )
+        }
+    }
+
+    private suspend fun completeDriveCloudDeletion(accessToken: String, accountEmail: String) {
+        runCatching {
+            withContext(Dispatchers.IO) {
+                val engine = DriveBackupEngine(getApplication())
+                val deletedCount = engine.deleteAllCloudData(accessToken)
+                Identity.getAuthorizationClient(getApplication<Application>())
+                    .revokeAccess(GoogleDriveAuthorization.revokeRequest(getApplication(), accountEmail))
+                    .await()
+                deletedCount to engine.clearCloudConfiguration()
+            }
+        }.onSuccess { (deletedCount, driveState) ->
+            resetPendingDriveAuthorization()
+            state = state.copy(
+                driveBackup = driveState,
+                message = tr(
+                    "已解除 Google Drive 绑定并删除 $deletedCount 个云端文件；本地备忘录已保留",
+                    "Google Drive was disconnected and $deletedCount cloud file(s) were deleted; local notes were preserved",
+                ),
+            )
+        }.onFailure { error ->
+            resetPendingDriveAuthorization()
+            state = state.copy(
+                driveBackup = DriveBackupEngine(getApplication()).state().copy(
+                    backupInProgress = false,
+                    lastError = error.message,
+                ),
+                message = localizedError(
+                    error,
+                    "自动备份已关闭，但云端删除或解除绑定未完成；本地备忘录未受影响",
+                    "Automatic backup is off, but cloud deletion or disconnect did not finish; local notes were not affected",
+                ),
+            )
+        }
     }
 
     fun scheduleEncryptedAutoLock() {
@@ -846,6 +1138,7 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
             .onSuccess { notes ->
                 if (generation == refreshGeneration && showingTrash == state.showingTrash) {
                     state = state.copy(notes = notes)
+                    DriveBackupScheduler.onLocalDataChanged(getApplication())
                 }
             }
             .onFailure { error ->
@@ -874,6 +1167,38 @@ class NotesViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun localizedError(error: Throwable, chineseFallback: String, englishFallback: String): String =
         if (isEnglish(state.settings.language)) englishFallback else error.message ?: chineseFallback
+
+    private fun driveRestoreError(error: Throwable): String {
+        val messages = generateSequence(error as Throwable?) { it.cause }.mapNotNull(Throwable::message).toList()
+        return when {
+            messages.any { it.contains("not been migrated", ignoreCase = true) } -> tr(
+                "这是旧版密码备份。请先让创建它的原设备升级，并联网完成一次自动或手动备份",
+                "This is a legacy password backup. Update its original device and let it complete one online backup first",
+            )
+            messages.any { it.contains("No Kotj backup", ignoreCase = true) } -> tr(
+                "这个 Google 账号中没有找到 Kotj 云端备份",
+                "No Kotj cloud backup was found in this Google Account",
+            )
+            messages.any {
+                it.contains("damaged", ignoreCase = true) ||
+                    it.contains("does not match", ignoreCase = true) ||
+                    it.contains("key record", ignoreCase = true)
+            } -> tr(
+                "云端备份或账号恢复密钥已损坏，本机内容未被更改",
+                "The cloud backup or its account recovery key is damaged; local content was not changed",
+            )
+            else -> tr(
+                "无法与云端合并，请检查网络和 Google 账号",
+                "Could not merge from cloud. Check the network and Google Account",
+            )
+        }
+    }
+
+    private fun resetPendingDriveAuthorization() {
+        pendingDriveAccountEmail = null
+        pendingDriveAuthorizationPurpose = DriveAuthorizationPurpose.BACKUP
+        driveAuthorizationPending = false
+    }
 
     private companion object {
         const val AUTO_LOCK_DELAY_MS = 15_000L

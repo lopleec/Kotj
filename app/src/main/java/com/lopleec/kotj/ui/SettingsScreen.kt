@@ -18,8 +18,10 @@ import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.ChevronRight
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.Language
+import androidx.compose.material.icons.outlined.Science
 import androidx.compose.material.icons.automirrored.outlined.Sort
 import androidx.compose.material.icons.outlined.ViewAgenda
 import androidx.compose.material.icons.outlined.WarningAmber
@@ -54,6 +56,7 @@ private enum class SettingsChoice { LANGUAGE, THEME, TRASH, SORT }
 fun SettingsScreen(
     settings: AppSettings,
     onUpdate: (AppSettings) -> Unit,
+    onOpenAdvanced: () -> Unit,
     onBack: () -> Unit,
 ) {
     val text = LocalAppStrings.current
@@ -177,6 +180,17 @@ fun SettingsScreen(
                     supportingContent = { Text(retentionLabel(settings.trashRetentionDays, text)) },
                     leadingContent = { Icon(Icons.Outlined.DeleteSweep, null) },
                     modifier = Modifier.clickable { choice = SettingsChoice.TRASH },
+                )
+            }
+            item { HorizontalDivider() }
+            item { SectionTitle(text("高级", "Advanced")) }
+            item {
+                ListItem(
+                    headlineContent = { Text(text("高级设置（试验性）", "Advanced settings (experimental)")) },
+                    supportingContent = { Text(text("云端备份等可选功能", "Optional features such as cloud backup")) },
+                    leadingContent = { Icon(Icons.Outlined.Science, null) },
+                    trailingContent = { Icon(Icons.Outlined.ChevronRight, null) },
+                    modifier = Modifier.clickable(onClick = onOpenAdvanced),
                 )
             }
             item { HorizontalDivider() }

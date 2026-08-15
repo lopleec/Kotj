@@ -1,5 +1,8 @@
 package com.lopleec.kotj
 
+import android.app.Activity
+import android.accounts.Account
+import android.accounts.AccountManager
 import android.hardware.biometrics.BiometricManager
 import android.hardware.biometrics.BiometricPrompt
 import android.content.Intent
@@ -8,12 +11,18 @@ import android.os.Bundle
 import android.os.CancellationSignal
 import androidx.annotation.RequiresApi
 import androidx.activity.ComponentActivity
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import com.lopleec.kotj.security.SystemUnlockStore
+import com.google.android.gms.auth.api.identity.Identity
+import com.google.android.gms.common.AccountPicker
+import com.lopleec.kotj.backup.DriveAuthorizationPurpose
+import com.lopleec.kotj.backup.GoogleDriveAuthorization
 import com.lopleec.kotj.ui.KotjApp
 import com.lopleec.kotj.ui.AppStrings
 import com.lopleec.kotj.ui.LocalAppStrings
@@ -27,6 +36,29 @@ class MainActivity : ComponentActivity() {
     private val notesViewModel: NotesViewModel by viewModels()
     private val systemUnlockStore by lazy { SystemUnlockStore(this) }
     private var backgroundSecureHold = false
+    private val driveAuthorizationLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult(),
+    ) { result ->
+        if (result.resultCode != Activity.RESULT_OK || result.data == null) {
+            notesViewModel.driveAuthorizationFailed()
+            return@registerForActivityResult
+        }
+        runCatching {
+            Identity.getAuthorizationClient(this).getAuthorizationResultFromIntent(result.data)
+        }.onSuccess(::handleDriveAuthorizationResult)
+            .onFailure(notesViewModel::driveAuthorizationFailed)
+    }
+    private val googleAccountPickerLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult(),
+    ) { result ->
+        val accountName = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_NAME)
+        val accountType = result.data?.getStringExtra(AccountManager.KEY_ACCOUNT_TYPE)
+        if (result.resultCode != Activity.RESULT_OK || accountName.isNullOrBlank() || accountType != GOOGLE_ACCOUNT_TYPE) {
+            notesViewModel.driveAuthorizationFailed()
+            return@registerForActivityResult
+        }
+        launchGoogleDriveAuthorization(accountName)
+    }
     private val releaseBackgroundSecureHold = Runnable {
         if (backgroundSecureHold) {
             SecureWindowGuard.release(window)
@@ -60,6 +92,11 @@ class MainActivity : ComponentActivity() {
                         onSystemDeleteEditor = ::requestSystemDeleteEditor,
                         onSystemMoveToTrash = ::requestSystemMoveToTrash,
                         onSystemDeleteForever = ::requestSystemDeleteForever,
+                        onGoogleDriveSignIn = ::requestGoogleDriveSignIn,
+                        onGoogleDriveBackupNow = ::requestGoogleDriveBackupNow,
+                        onGoogleDriveRestore = ::requestGoogleDriveRestore,
+                        onGoogleDriveSwitchAccount = ::switchGoogleDriveAccount,
+                        onGoogleDriveDisconnectAndDelete = ::disconnectGoogleDriveAndDeleteCloudData,
                     )
                 }
             }
@@ -97,6 +134,92 @@ class MainActivity : ComponentActivity() {
             onAuthorized = notesViewModel::unlock,
             onCancelled = notesViewModel::dismissUnlock,
         )
+    }
+
+    private fun requestGoogleDriveSignIn() {
+        if (!notesViewModel.state.settings.googleDriveBackupEnabled) return
+        launchGoogleAccountPicker(notesViewModel.state.driveBackup.accountEmail)
+    }
+
+    private fun requestGoogleDriveBackupNow() {
+        if (!notesViewModel.state.settings.googleDriveBackupEnabled) return
+        launchGoogleDriveAuthorization(notesViewModel.state.driveBackup.accountEmail)
+    }
+
+    private fun requestGoogleDriveRestore() {
+        if (!notesViewModel.state.settings.googleDriveBackupEnabled) return
+        launchGoogleDriveAuthorization(
+            accountEmail = notesViewModel.state.driveBackup.accountEmail,
+            purpose = DriveAuthorizationPurpose.RESTORE,
+        )
+    }
+
+    private fun launchGoogleAccountPicker(selectedEmail: String?) {
+        val selected = selectedEmail?.takeIf(String::isNotBlank)?.let { Account(it, GOOGLE_ACCOUNT_TYPE) }
+        val intent = AccountPicker.newChooseAccountIntent(
+            AccountPicker.AccountChooserOptions.Builder()
+                .setAllowableAccountsTypes(listOf(GOOGLE_ACCOUNT_TYPE))
+                .setSelectedAccount(selected)
+                .setAlwaysShowAccountPicker(true)
+                .setTitleOverrideText(localized("选择 Google Drive 账号", "Choose a Google Drive account"))
+                .build(),
+        )
+        runCatching { googleAccountPickerLauncher.launch(intent) }
+            .onFailure(notesViewModel::driveAuthorizationFailed)
+    }
+
+    private fun launchGoogleDriveAuthorization(
+        accountEmail: String?,
+        purpose: DriveAuthorizationPurpose = DriveAuthorizationPurpose.BACKUP,
+    ) {
+        val selectedAccount = accountEmail?.takeIf(String::isNotBlank)
+        if (selectedAccount == null) {
+            notesViewModel.driveAuthorizationFailed(IllegalStateException("Choose a Google Account first"))
+            return
+        }
+        notesViewModel.driveAuthorizationStarted(selectedAccount, purpose)
+        val request = runCatching {
+            GoogleDriveAuthorization.authorizationRequest(this, selectedAccount)
+        }.getOrElse {
+            notesViewModel.driveAuthorizationFailed(it)
+            return
+        }
+        Identity.getAuthorizationClient(this)
+            .authorize(request)
+            .addOnSuccessListener(::handleDriveAuthorizationResult)
+            .addOnFailureListener(notesViewModel::driveAuthorizationFailed)
+    }
+
+    private fun disconnectGoogleDriveAndDeleteCloudData() {
+        val accountEmail = notesViewModel.disableDriveBackupAndPrepareDeletion() ?: return
+        launchGoogleDriveAuthorization(accountEmail, DriveAuthorizationPurpose.DELETE_CLOUD_DATA)
+    }
+
+    private fun handleDriveAuthorizationResult(result: com.google.android.gms.auth.api.identity.AuthorizationResult) {
+        if (result.hasResolution()) {
+            val pendingIntent = result.pendingIntent
+            if (pendingIntent == null) {
+                notesViewModel.driveAuthorizationFailed(IllegalStateException("Google authorization did not return a resolution"))
+                return
+            }
+            runCatching {
+                driveAuthorizationLauncher.launch(IntentSenderRequest.Builder(pendingIntent.intentSender).build())
+            }.onFailure(notesViewModel::driveAuthorizationFailed)
+            return
+        }
+        val token = result.accessToken
+        if (token.isNullOrBlank()) {
+            notesViewModel.driveAuthorizationFailed(IllegalStateException("Google authorization did not return an access token"))
+        } else {
+            notesViewModel.completeDriveAuthorization(token)
+        }
+    }
+
+    private fun switchGoogleDriveAccount() {
+        if (!notesViewModel.state.settings.googleDriveBackupEnabled) return
+        // Keep the current account and its recovery state until the replacement account has been
+        // selected, authorized, and successfully inspected. Cancelling this picker changes nothing.
+        launchGoogleAccountPicker(null)
     }
 
     private fun requestSystemDeleteEditor(noteId: String) {
@@ -296,4 +419,8 @@ class MainActivity : ComponentActivity() {
     private fun isCancellationError(errorCode: Int): Boolean =
         errorCode == BiometricPrompt.BIOMETRIC_ERROR_CANCELED ||
             errorCode == BiometricPrompt.BIOMETRIC_ERROR_USER_CANCELED
+
+    private companion object {
+        const val GOOGLE_ACCOUNT_TYPE = "com.google"
+    }
 }

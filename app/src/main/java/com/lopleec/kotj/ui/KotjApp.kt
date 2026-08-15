@@ -21,8 +21,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Add
 import androidx.compose.material.icons.automirrored.outlined.ArrowBack
 import androidx.compose.material.icons.automirrored.outlined.DriveFileMove
+import androidx.compose.material.icons.automirrored.outlined.OpenInNew
 import androidx.compose.material.icons.outlined.Delete
 import androidx.compose.material.icons.outlined.DeleteForever
+import androidx.compose.material.icons.outlined.DriveFileRenameOutline
 import androidx.compose.material.icons.outlined.Edit
 import androidx.compose.material.icons.outlined.Folder
 import androidx.compose.material.icons.outlined.FolderOpen
@@ -39,7 +41,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -97,10 +99,16 @@ fun KotjApp(
     onSystemDeleteEditor: (String) -> Unit = {},
     onSystemMoveToTrash: (String) -> Unit = {},
     onSystemDeleteForever: (String) -> Unit = {},
+    onGoogleDriveSignIn: () -> Unit = {},
+    onGoogleDriveBackupNow: () -> Unit = {},
+    onGoogleDriveRestore: () -> Unit = {},
+    onGoogleDriveSwitchAccount: () -> Unit = {},
+    onGoogleDriveDisconnectAndDelete: () -> Unit = {},
 ) {
     val state = viewModel.state
     val text = LocalAppStrings.current
     var settingsVisible by rememberSaveable { mutableStateOf(false) }
+    var advancedSettingsVisible by rememberSaveable { mutableStateOf(false) }
     val snackbar = remember { SnackbarHostState() }
     state.message?.let { message ->
         LaunchedEffect(message) {
@@ -109,10 +117,14 @@ fun KotjApp(
         }
     }
 
-    BackHandler(enabled = state.importPreview != null || state.editor != null || settingsVisible) {
+    BackHandler(
+        enabled = state.importPreview != null || state.editor != null || settingsVisible || advancedSettingsVisible,
+    ) {
         when {
             state.importPreview != null -> viewModel.dismissImportPreview()
             state.editor != null -> viewModel.closeEditor()
+            advancedSettingsVisible && state.driveBackup.restoreInProgress -> Unit
+            advancedSettingsVisible -> advancedSettingsVisible = false
             else -> settingsVisible = false
         }
     }
@@ -124,10 +136,29 @@ fun KotjApp(
                 onBack = viewModel::dismissImportPreview,
                 onSave = viewModel::saveImportPreview,
             )
+        } else if (advancedSettingsVisible) {
+            AdvancedSettingsScreen(
+                settings = state.settings,
+                driveState = state.driveBackup,
+                onUpdate = viewModel::updateSettings,
+                onSignIn = onGoogleDriveSignIn,
+                onSwitchAccount = onGoogleDriveSwitchAccount,
+                onBackupNow = onGoogleDriveBackupNow,
+                onRestoreFromCloud = onGoogleDriveRestore,
+                onDisableKeepingCloud = viewModel::disableDriveBackupKeepingCloud,
+                onDisableAndDeleteCloud = onGoogleDriveDisconnectAndDelete,
+                onBack = {
+                    if (!state.driveBackup.restoreInProgress) advancedSettingsVisible = false
+                },
+            )
         } else if (settingsVisible) {
             SettingsScreen(
                 settings = state.settings,
                 onUpdate = viewModel::updateSettings,
+                onOpenAdvanced = {
+                    viewModel.refreshDriveBackupState()
+                    advancedSettingsVisible = true
+                },
                 onBack = { settingsVisible = false },
             )
         } else if (state.editor == null) {
@@ -135,7 +166,10 @@ fun KotjApp(
                 state = state,
                 viewModel = viewModel,
                 snackbar = snackbar,
-                onOpenSettings = { settingsVisible = true },
+                onOpenSettings = {
+                    advancedSettingsVisible = false
+                    settingsVisible = true
+                },
                 onSystemMoveToTrash = onSystemMoveToTrash,
                 onSystemDeleteForever = onSystemDeleteForever,
             )
@@ -392,11 +426,16 @@ private fun LibraryScreen(
             },
             floatingActionButton = {
                 if (!state.showingTrash) {
-                    ExtendedFloatingActionButton(
+                    FloatingActionButton(
                         onClick = viewModel::createNote,
-                        icon = { Icon(Icons.Outlined.Edit, null) },
-                        text = { Text(text("新建备忘录", "New note")) },
-                    )
+                        modifier = Modifier.size(80.dp),
+                    ) {
+                        Icon(
+                            Icons.Outlined.Edit,
+                            text("新建备忘录", "New note"),
+                            modifier = Modifier.size(30.dp),
+                        )
+                    }
                 }
             },
         ) { padding ->
@@ -492,7 +531,7 @@ private fun LibraryScreen(
             )
             ListItem(
                 headlineContent = { Text(text("打开", "Open")) },
-                leadingContent = { Icon(Icons.Outlined.Edit, null) },
+                leadingContent = { Icon(Icons.AutoMirrored.Outlined.OpenInNew, null) },
                 modifier = Modifier.clickable {
                     noteActions = null
                     viewModel.requestOpen(note)
@@ -501,7 +540,7 @@ private fun LibraryScreen(
             ListItem(
                 headlineContent = { Text(text("重命名", "Rename")) },
                 supportingContent = if (note.encrypted) ({ Text(text("请先打开并解锁", "Open and unlock first")) }) else null,
-                leadingContent = { Icon(Icons.Outlined.Edit, null) },
+                leadingContent = { Icon(Icons.Outlined.DriveFileRenameOutline, null) },
                 modifier = Modifier.clickable(enabled = !note.encrypted) {
                     noteActions = null
                     renameNote = note

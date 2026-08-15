@@ -6,9 +6,17 @@ import android.app.Activity
 import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.Crossfade
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.Image as ComposeImage
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,6 +31,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -63,10 +73,12 @@ import androidx.compose.material.icons.outlined.SaveAlt
 import androidx.compose.material.icons.outlined.TableChart
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Checkbox
-import androidx.compose.material3.FilledTonalIconButton
+import androidx.compose.material3.FilledTonalIconToggleButton
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.IconButtonDefaults
+import androidx.compose.material3.ListItemDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ModalBottomSheet
@@ -92,6 +104,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
@@ -104,8 +117,12 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.platform.LocalWindowInfo
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
@@ -120,6 +137,9 @@ import androidx.compose.ui.text.input.OffsetMapping
 import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.lopleec.kotj.data.AttachmentContent
@@ -133,10 +153,26 @@ import com.lopleec.kotj.model.NoteDocument
 import com.lopleec.kotj.model.RichSpan
 import com.lopleec.kotj.model.TextKind
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 private const val TITLE_BLOCK_ID = "__note_title__"
+private val EDITOR_DOCK_SHAPE = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+private val EDITOR_DOCK_OVERLAP = 16.dp
+private val EDITOR_TOOLBAR_HEIGHT = 64.dp
+private val EDITOR_TEXT_STYLE_PANEL_HEIGHT = 312.dp
+private val EDITOR_COLOR_PANEL_HEIGHT = 152.dp
+private const val EDITOR_PANEL_EXIT_MILLIS = 180
+
+private enum class EditorPanel { TEXT_STYLE, COLOR, INSERT }
+
+private val EDITOR_TEXT_KINDS = listOf(
+    TextKind.TITLE,
+    TextKind.BODY,
+    TextKind.HEADING,
+    TextKind.SUBHEADING,
+)
 
 @Composable
 fun NoteEditorScreen(
@@ -179,11 +215,41 @@ fun NoteEditorScreen(
     var findQuery by remember(session.noteId) { mutableStateOf(session.initialSearchQuery) }
     var activeFindIndex by remember(session.noteId) { mutableIntStateOf(0) }
     var imageInsertionPending by remember { mutableStateOf<Set<String>?>(null) }
+    var activeEditorPanel by remember(session.noteId) { mutableStateOf<EditorPanel?>(null) }
+    var displayedEditorPanel by remember(session.noteId) { mutableStateOf<EditorPanel?>(null) }
+    var pendingEditorPanel by remember(session.noteId) { mutableStateOf<EditorPanel?>(null) }
+    var editorPanelExitInProgress by remember(session.noteId) { mutableStateOf(false) }
     var titleFieldVisible by remember(session.noteId) {
         mutableStateOf(session.autoFocus || session.document.title.isNotBlank() || session.document.blocks.isEmpty())
     }
     val editorListState = rememberLazyListState()
     val keyboard = LocalSoftwareKeyboardController.current
+    val focusManager = LocalFocusManager.current
+    val density = LocalDensity.current
+    val imeHeightPx = WindowInsets.ime.getBottom(density)
+    val keyboardVisible = imeHeightPx > 0
+
+    LaunchedEffect(keyboardVisible) {
+        if (!keyboardVisible) {
+            activeEditorPanel = null
+            pendingEditorPanel = null
+            editorPanelExitInProgress = false
+        }
+    }
+
+    LaunchedEffect(editorPanelExitInProgress, keyboardVisible) {
+        if (!editorPanelExitInProgress || !keyboardVisible) return@LaunchedEffect
+        delay(EDITOR_PANEL_EXIT_MILLIS.toLong())
+        if (editorPanelExitInProgress && activeEditorPanel == null && keyboardVisible) {
+            val pending = pendingEditorPanel
+            editorPanelExitInProgress = false
+            pendingEditorPanel = null
+            if (pending != null) {
+                displayedEditorPanel = pending
+                activeEditorPanel = pending
+            }
+        }
+    }
 
     LaunchedEffect(session.noteId) {
         if (session.document.subtitle.isNotBlank()) {
@@ -354,28 +420,48 @@ fun NoteEditorScreen(
             pendingFocusBlockId = block.id
             return
         }
-        if (kind == TextKind.TITLE) {
-            val current = session.document.blocks.firstOrNull { it.id == id && it.type == BlockType.TEXT } ?: return
-            onUpdate { document ->
-                val oldTitleAsBody = document.title.takeIf { it.isNotBlank() }?.let {
-                    NoteBlock(type = BlockType.TEXT, text = it, textKind = TextKind.BODY)
-                }
-                val remaining = document.blocks.filterNot { it.id == id }.toMutableList()
-                oldTitleAsBody?.let { remaining.add(0, it) }
-                document.copy(title = current.text, blocks = remaining)
-            }
-            activeBlockId = TITLE_BLOCK_ID
-            titleFieldVisible = true
-            pendingFocusBlockId = TITLE_BLOCK_ID
-        } else {
-            updateBlock(id) { it.copy(textKind = kind) }
-            pendingFocusBlockId = id
+        updateBlock(id) { it.copy(textKind = kind) }
+        pendingFocusBlockId = id
+    }
+
+    fun requestEditorPanel(panel: EditorPanel) {
+        if (editorPanelExitInProgress) {
+            pendingEditorPanel = panel
+            return
+        }
+        if (activeEditorPanel == panel) {
+            pendingEditorPanel = null
+            activeEditorPanel = null
+            editorPanelExitInProgress = true
+            return
+        }
+        if (activeEditorPanel != null) {
+            pendingEditorPanel = panel
+            activeEditorPanel = null
+            editorPanelExitInProgress = true
+            return
+        }
+        displayedEditorPanel = panel
+        pendingEditorPanel = null
+        activeEditorPanel = panel
+    }
+
+    fun dismissEditorPanel() {
+        pendingEditorPanel = null
+        if (activeEditorPanel != null) {
+            activeEditorPanel = null
+            editorPanelExitInProgress = true
         }
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbar) },
-        topBar = {
+    BackHandler(enabled = activeEditorPanel != null || editorPanelExitInProgress) {
+        dismissEditorPanel()
+    }
+
+    Box(Modifier.fillMaxSize()) {
+        Scaffold(
+            snackbarHost = { SnackbarHost(snackbar) },
+            topBar = {
             Column {
                 TopAppBar(
                     title = {
@@ -400,6 +486,16 @@ fun NoteEditorScreen(
                         }
                         IconButton(onClick = { moreSheetVisible = true }) {
                             Icon(Icons.Outlined.MoreVert, strings("更多", "More"))
+                        }
+                        if (keyboardVisible) {
+                            TextButton(
+                                onClick = {
+                                    keyboard?.hide()
+                                    focusManager.clearFocus()
+                                },
+                            ) {
+                                Text(strings("完成", "Done"))
+                            }
                         }
                     },
                     colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -435,32 +531,18 @@ fun NoteEditorScreen(
                 }
             }
         },
-        bottomBar = {
-            EditorToolbar(
-                activeKind = if (activeBlockId == TITLE_BLOCK_ID) TextKind.TITLE
-                else session.document.blocks.firstOrNull { it.id == activeBlockId }?.textKind,
-                onTextKind = ::changeActiveTextKind,
-                onFormat = ::applyTextFormat,
-                onAddImage = {
-                    imageLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                },
-                onAddTable = {
-                    insertObject(NoteBlock(type = BlockType.TABLE, tableCells = List(2) { List(2) { "" } }))
-                },
-                onAddDivider = { insertObject(NoteBlock(type = BlockType.DIVIDER)) },
-                onAddNumberedList = {
-                    insertTextBlock(NoteBlock(text = "1. ", textKind = TextKind.BODY))
-                },
-                onAddBulletList = {
-                    insertTextBlock(NoteBlock(text = "• ", textKind = TextKind.BODY))
-                },
-                onAddChecklist = {
-                    insertTextBlock(NoteBlock(textKind = TextKind.CHECKLIST))
-                },
-            )
-        },
-    ) { padding ->
-        LazyColumn(
+            bottomBar = {
+                if (keyboardVisible) {
+                    Spacer(
+                        Modifier
+                            .fillMaxWidth()
+                            .imePadding()
+                            .height(EDITOR_TOOLBAR_HEIGHT),
+                    )
+                }
+            },
+        ) { padding ->
+            LazyColumn(
             state = editorListState,
             modifier = Modifier.fillMaxSize().padding(padding),
             contentPadding = PaddingValues(start = 20.dp, top = 12.dp, end = 12.dp, bottom = 24.dp),
@@ -556,6 +638,85 @@ fun NoteEditorScreen(
                     BlockType.DIVIDER -> DividerBlock()
                 }
             }
+            }
+        }
+
+        if (keyboardVisible) {
+            val containerHeight = with(density) { LocalWindowInfo.current.containerSize.height.toDp() }
+            val maximumPanelHeight = minOf(360.dp, containerHeight * 0.4f).coerceAtLeast(176.dp)
+            val panelHeight = minOf(
+                when (displayedEditorPanel) {
+                    EditorPanel.TEXT_STYLE -> EDITOR_TEXT_STYLE_PANEL_HEIGHT
+                    EditorPanel.COLOR -> EDITOR_COLOR_PANEL_HEIGHT
+                    EditorPanel.INSERT, null -> maximumPanelHeight
+                },
+                maximumPanelHeight,
+            )
+            EditorDock(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .imePadding(),
+                panelVisible = activeEditorPanel != null,
+                panelHeight = panelHeight,
+                panel = {
+                    displayedEditorPanel?.let { panel ->
+                        EditorSecondaryPanel(
+                            panel = panel,
+                            height = panelHeight,
+                            activeKind = if (activeBlockId == TITLE_BLOCK_ID) TextKind.TITLE
+                            else session.document.blocks.firstOrNull { it.id == activeBlockId }?.textKind,
+                            onClose = ::dismissEditorPanel,
+                            onTextKind = { kind ->
+                                changeActiveTextKind(kind)
+                                dismissEditorPanel()
+                            },
+                            onColor = { color ->
+                                applyTextFormat(FormatKind.COLOR, color)
+                                dismissEditorPanel()
+                            },
+                            onAddNumberedList = {
+                                insertTextBlock(NoteBlock(text = "1. ", textKind = TextKind.BODY))
+                                dismissEditorPanel()
+                            },
+                            onAddBulletList = {
+                                insertTextBlock(NoteBlock(text = "• ", textKind = TextKind.BODY))
+                                dismissEditorPanel()
+                            },
+                            onAddChecklist = {
+                                insertTextBlock(NoteBlock(textKind = TextKind.CHECKLIST))
+                                dismissEditorPanel()
+                            },
+                            onAddImage = {
+                                dismissEditorPanel()
+                                imageLauncher.launch(
+                                    PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly),
+                                )
+                            },
+                            onAddTable = {
+                                insertObject(
+                                    NoteBlock(
+                                        type = BlockType.TABLE,
+                                        tableCells = List(2) { List(2) { "" } },
+                                    ),
+                                )
+                                dismissEditorPanel()
+                            },
+                            onAddDivider = {
+                                insertObject(NoteBlock(type = BlockType.DIVIDER))
+                                dismissEditorPanel()
+                            },
+                        )
+                    }
+                },
+                toolbar = {
+                    EditorToolbar(
+                        selectedPanel = activeEditorPanel,
+                        onPanelRequested = ::requestEditorPanel,
+                        onFormat = ::applyTextFormat,
+                    )
+                },
+            )
         }
     }
 
@@ -711,163 +872,303 @@ fun NoteEditorScreen(
     }
 }
 
-private enum class FormatKind { BOLD, ITALIC, UNDERLINE, STRIKE, COLOR }
+internal enum class FormatKind { BOLD, ITALIC, UNDERLINE, STRIKE, COLOR }
+
+@Composable
+private fun EditorDock(
+    modifier: Modifier = Modifier,
+    panelVisible: Boolean,
+    panelHeight: Dp,
+    panel: @Composable () -> Unit,
+    toolbar: @Composable () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .height(panelHeight + EDITOR_TOOLBAR_HEIGHT - EDITOR_DOCK_OVERLAP)
+            .clipToBounds(),
+    ) {
+        AnimatedVisibility(
+            visible = panelVisible,
+            modifier = Modifier.align(Alignment.TopCenter),
+            enter = slideInVertically(
+                animationSpec = tween(durationMillis = 240, easing = FastOutSlowInEasing),
+                initialOffsetY = { it },
+            ),
+            exit = slideOutVertically(
+                animationSpec = tween(durationMillis = EDITOR_PANEL_EXIT_MILLIS, easing = FastOutLinearInEasing),
+                targetOffsetY = { it },
+            ),
+        ) {
+            panel()
+        }
+        Box(
+            modifier = Modifier.align(Alignment.BottomCenter).fillMaxWidth(),
+            contentAlignment = Alignment.BottomCenter,
+        ) {
+            toolbar()
+        }
+    }
+}
 
 @Composable
 private fun EditorToolbar(
-    activeKind: TextKind?,
-    onTextKind: (TextKind) -> Unit,
+    modifier: Modifier = Modifier,
+    selectedPanel: EditorPanel?,
+    onPanelRequested: (EditorPanel) -> Unit,
     onFormat: (FormatKind, Color?) -> Unit,
-    onAddImage: () -> Unit,
-    onAddTable: () -> Unit,
-    onAddDivider: () -> Unit,
-    onAddNumberedList: () -> Unit,
-    onAddBulletList: () -> Unit,
-    onAddChecklist: () -> Unit,
 ) {
     val strings = LocalAppStrings.current
-    var styleSheet by remember { mutableStateOf(false) }
-    var insertSheet by remember { mutableStateOf(false) }
-    var colorSheet by remember { mutableStateOf(false) }
-    val colors = listOf(
-        Color(0xFFB3261E), Color(0xFF00639B), Color(0xFF2E7D32),
-        Color(0xFF7B1FA2), Color(0xFFEF6C00),
-    )
     Surface(
-        modifier = Modifier.fillMaxWidth().imePadding(),
-        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
-        color = MaterialTheme.colorScheme.surfaceContainer,
-        tonalElevation = 3.dp,
+        modifier = modifier.fillMaxWidth(),
+        shape = EDITOR_DOCK_SHAPE,
+        color = MaterialTheme.colorScheme.surfaceContainerHigh,
         shadowElevation = 3.dp,
     ) {
         Row(
-            modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 4.dp, vertical = 6.dp),
+            modifier = Modifier.fillMaxWidth().height(EDITOR_TOOLBAR_HEIGHT).padding(horizontal = 4.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.SpaceEvenly,
         ) {
-            IconButton(onClick = { styleSheet = true }) { Icon(Icons.Outlined.FormatSize, strings("文本样式", "Text style")) }
+            EditorPanelToggle(
+                checked = selectedPanel == EditorPanel.TEXT_STYLE,
+                onClick = { onPanelRequested(EditorPanel.TEXT_STYLE) },
+                icon = Icons.Outlined.FormatSize,
+                description = strings("文本样式", "Text style"),
+            )
             IconButton(onClick = { onFormat(FormatKind.BOLD, null) }) { Icon(Icons.Outlined.FormatBold, strings("加粗", "Bold")) }
             IconButton(onClick = { onFormat(FormatKind.ITALIC, null) }) { Icon(Icons.Outlined.FormatItalic, strings("斜体", "Italic")) }
             IconButton(onClick = { onFormat(FormatKind.UNDERLINE, null) }) { Icon(Icons.Outlined.FormatUnderlined, strings("下划线", "Underline")) }
             IconButton(onClick = { onFormat(FormatKind.STRIKE, null) }) { Icon(Icons.Outlined.FormatStrikethrough, strings("删除线", "Strikethrough")) }
-            IconButton(onClick = { colorSheet = true }) { Icon(Icons.Outlined.FormatColorText, strings("文字颜色", "Text color")) }
-            FilledTonalIconButton(onClick = { insertSheet = true }) { Icon(Icons.Outlined.Add, strings("插入", "Insert")) }
+            EditorPanelToggle(
+                checked = selectedPanel == EditorPanel.COLOR,
+                onClick = { onPanelRequested(EditorPanel.COLOR) },
+                icon = Icons.Outlined.FormatColorText,
+                description = strings("文字颜色", "Text color"),
+            )
+            EditorPanelToggle(
+                checked = selectedPanel == EditorPanel.INSERT,
+                onClick = { onPanelRequested(EditorPanel.INSERT) },
+                icon = Icons.Outlined.Add,
+                description = strings("插入", "Insert"),
+            )
         }
     }
+}
 
-    if (styleSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { styleSheet = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-        ) {
-            Text(
-                strings("文本样式", "Text style"),
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
-            )
-            TextKind.entries.forEach { kind ->
-                ListItem(
-                    headlineContent = { Text(kind.label(strings)) },
-                    supportingContent = {
-                        Text(
-                            when (kind) {
-                                TextKind.TITLE -> strings("作为整篇备忘录标题", "Use as the note title")
-                                TextKind.BODY -> strings("普通正文", "Regular note text")
-                                TextKind.HEADING -> strings("正文中的小标题", "Heading inside the note")
-                                TextKind.SUBHEADING -> strings("次级标题或副标题", "Subheading")
-                                TextKind.QUOTE -> strings("引用文字", "Quoted text")
-                                TextKind.CHECKLIST -> strings("待办事项", "Checklist item")
-                            },
-                        )
-                    },
-                    leadingContent = { RadioButton(selected = kind == activeKind, onClick = null) },
-                    modifier = Modifier.clickable {
-                        onTextKind(kind)
-                        styleSheet = false
-                    },
-                )
-            }
-            Spacer(Modifier.navigationBarsPadding().height(8.dp))
-        }
+@Composable
+private fun EditorPanelToggle(
+    checked: Boolean,
+    onClick: () -> Unit,
+    icon: ImageVector,
+    description: String,
+) {
+    FilledTonalIconToggleButton(
+        checked = checked,
+        onCheckedChange = { onClick() },
+        colors = IconButtonDefaults.filledTonalIconToggleButtonColors(
+            containerColor = Color.Transparent,
+            contentColor = MaterialTheme.colorScheme.onSurfaceVariant,
+            checkedContainerColor = MaterialTheme.colorScheme.secondaryContainer,
+            checkedContentColor = MaterialTheme.colorScheme.onSecondaryContainer,
+        ),
+    ) {
+        Icon(icon, description)
     }
-    if (insertSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { insertSheet = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-        ) {
-            Text(
-                strings("插入内容", "Insert"),
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
-            )
-            ListItem(
-                headlineContent = { Text(strings("编号列表", "Numbered list")) },
-                supportingContent = { Text("1.  2.  3.") },
-                leadingContent = { Icon(Icons.Outlined.FormatListNumbered, null) },
-                modifier = Modifier.clickable { insertSheet = false; onAddNumberedList() },
-            )
-            ListItem(
-                headlineContent = { Text(strings("圆点列表", "Bulleted list")) },
-                supportingContent = { Text("•  •  •") },
-                leadingContent = { Icon(Icons.AutoMirrored.Outlined.FormatListBulleted, null) },
-                modifier = Modifier.clickable { insertSheet = false; onAddBulletList() },
-            )
-            ListItem(
-                headlineContent = { Text(strings("待办清单", "Checklist")) },
-                supportingContent = { Text(strings("使用可勾选的复选框", "Uses checkable boxes")) },
-                leadingContent = { Icon(Icons.Outlined.CheckBox, null) },
-                modifier = Modifier.clickable { insertSheet = false; onAddChecklist() },
-            )
-            HorizontalDivider()
-            ListItem(
-                headlineContent = { Text(strings("照片", "Photo")) },
-                leadingContent = { Icon(Icons.Outlined.Image, null) },
-                modifier = Modifier.clickable { insertSheet = false; onAddImage() },
-            )
-            ListItem(
-                headlineContent = { Text(strings("表格", "Table")) },
-                leadingContent = { Icon(Icons.Outlined.TableChart, null) },
-                modifier = Modifier.clickable { insertSheet = false; onAddTable() },
-            )
-            ListItem(
-                headlineContent = { Text(strings("分界线", "Divider")) },
-                leadingContent = { Icon(Icons.Outlined.HorizontalRule, null) },
-                modifier = Modifier.clickable { insertSheet = false; onAddDivider() },
-            )
-            Spacer(Modifier.navigationBarsPadding().height(8.dp))
-        }
-    }
-    if (colorSheet) {
-        ModalBottomSheet(
-            onDismissRequest = { colorSheet = false },
-            containerColor = MaterialTheme.colorScheme.surface,
-        ) {
-            Text(
-                strings("文字颜色", "Text color"),
-                style = MaterialTheme.typography.titleLarge,
-                modifier = Modifier.padding(horizontal = 24.dp, vertical = 12.dp),
-            )
+}
+
+@Composable
+private fun EditorSecondaryPanel(
+    panel: EditorPanel,
+    height: Dp,
+    activeKind: TextKind?,
+    onClose: () -> Unit,
+    onTextKind: (TextKind) -> Unit,
+    onColor: (Color?) -> Unit,
+    onAddNumberedList: () -> Unit,
+    onAddBulletList: () -> Unit,
+    onAddChecklist: () -> Unit,
+    onAddImage: () -> Unit,
+    onAddTable: () -> Unit,
+    onAddDivider: () -> Unit,
+) {
+    val strings = LocalAppStrings.current
+    Surface(
+        modifier = Modifier.fillMaxWidth().height(height),
+        shape = EDITOR_DOCK_SHAPE,
+        color = MaterialTheme.colorScheme.surfaceContainer,
+        shadowElevation = 1.dp,
+    ) {
+        Column(Modifier.fillMaxSize()) {
             Row(
-                modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 20.dp),
-                horizontalArrangement = Arrangement.SpaceBetween,
+                modifier = Modifier.fillMaxWidth().height(56.dp).padding(start = 24.dp, end = 8.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                TextButton(onClick = {
-                    onFormat(FormatKind.COLOR, null)
-                    colorSheet = false
-                }) {
-                    Text(strings("默认", "Default"))
+                Text(
+                    when (panel) {
+                        EditorPanel.TEXT_STYLE -> strings("文本样式", "Text style")
+                        EditorPanel.COLOR -> strings("文字颜色", "Text color")
+                        EditorPanel.INSERT -> strings("插入内容", "Insert")
+                    },
+                    style = MaterialTheme.typography.titleMedium,
+                    modifier = Modifier.weight(1f),
+                )
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Outlined.Close, strings("关闭", "Close"))
                 }
-                colors.forEach { color ->
-                    Box(
-                        Modifier.size(40.dp).clip(RoundedCornerShape(50)).background(color).clickable {
-                            onFormat(FormatKind.COLOR, color)
-                            colorSheet = false
-                        },
+            }
+            Crossfade(
+                targetState = panel,
+                modifier = Modifier.fillMaxWidth().weight(1f),
+                animationSpec = tween(durationMillis = 120, easing = FastOutSlowInEasing),
+                label = "editor-secondary-panel",
+            ) { target ->
+                when (target) {
+                    EditorPanel.TEXT_STYLE -> EditorTextStylePanel(activeKind, onTextKind)
+                    EditorPanel.COLOR -> EditorColorPanel(onColor)
+                    EditorPanel.INSERT -> EditorInsertPanel(
+                        onAddNumberedList = onAddNumberedList,
+                        onAddBulletList = onAddBulletList,
+                        onAddChecklist = onAddChecklist,
+                        onAddImage = onAddImage,
+                        onAddTable = onAddTable,
+                        onAddDivider = onAddDivider,
                     )
                 }
             }
-            Spacer(Modifier.navigationBarsPadding().height(8.dp))
+        }
+    }
+}
+
+@Composable
+private fun EditorTextStylePanel(
+    activeKind: TextKind?,
+    onTextKind: (TextKind) -> Unit,
+) {
+    val strings = LocalAppStrings.current
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(top = 8.dp, bottom = EDITOR_DOCK_OVERLAP + 8.dp),
+    ) {
+        items(EDITOR_TEXT_KINDS, key = TextKind::name) { kind ->
+            ListItem(
+                headlineContent = { Text(kind.label(strings)) },
+                leadingContent = { RadioButton(selected = kind == activeKind, onClick = null) },
+                modifier = Modifier.clickable { onTextKind(kind) },
+                colors = ListItemDefaults.colors(containerColor = Color.Transparent),
+            )
+        }
+    }
+}
+
+@Composable
+private fun EditorInsertPanel(
+    onAddNumberedList: () -> Unit,
+    onAddBulletList: () -> Unit,
+    onAddChecklist: () -> Unit,
+    onAddImage: () -> Unit,
+    onAddTable: () -> Unit,
+    onAddDivider: () -> Unit,
+) {
+    val strings = LocalAppStrings.current
+    val itemColors = ListItemDefaults.colors(containerColor = Color.Transparent)
+    LazyColumn(
+        modifier = Modifier.fillMaxSize(),
+        contentPadding = PaddingValues(bottom = EDITOR_DOCK_OVERLAP + 8.dp),
+    ) {
+        item {
+            ListItem(
+                headlineContent = { Text(strings("编号列表", "Numbered list")) },
+                leadingContent = { Icon(Icons.Outlined.FormatListNumbered, null) },
+                modifier = Modifier.clickable(onClick = onAddNumberedList),
+                colors = itemColors,
+            )
+        }
+        item {
+            ListItem(
+                headlineContent = { Text(strings("圆点列表", "Bulleted list")) },
+                leadingContent = { Icon(Icons.AutoMirrored.Outlined.FormatListBulleted, null) },
+                modifier = Modifier.clickable(onClick = onAddBulletList),
+                colors = itemColors,
+            )
+        }
+        item {
+            ListItem(
+                headlineContent = { Text(strings("待办清单", "Checklist")) },
+                leadingContent = { Icon(Icons.Outlined.CheckBox, null) },
+                modifier = Modifier.clickable(onClick = onAddChecklist),
+                colors = itemColors,
+            )
+        }
+        item {
+            HorizontalDivider(
+                modifier = Modifier.padding(horizontal = 16.dp),
+                color = MaterialTheme.colorScheme.outlineVariant,
+            )
+        }
+        item {
+            ListItem(
+                headlineContent = { Text(strings("照片", "Photo")) },
+                leadingContent = { Icon(Icons.Outlined.Image, null) },
+                modifier = Modifier.clickable(onClick = onAddImage),
+                colors = itemColors,
+            )
+        }
+        item {
+            ListItem(
+                headlineContent = { Text(strings("表格", "Table")) },
+                leadingContent = { Icon(Icons.Outlined.TableChart, null) },
+                modifier = Modifier.clickable(onClick = onAddTable),
+                colors = itemColors,
+            )
+        }
+        item {
+            ListItem(
+                headlineContent = { Text(strings("分界线", "Divider")) },
+                leadingContent = { Icon(Icons.Outlined.HorizontalRule, null) },
+                modifier = Modifier.clickable(onClick = onAddDivider),
+                colors = itemColors,
+            )
+        }
+    }
+}
+
+@Composable
+private fun EditorColorPanel(onColor: (Color?) -> Unit) {
+    val strings = LocalAppStrings.current
+    val colors = listOf(
+        strings("红色", "Red") to Color(0xFFB3261E),
+        strings("蓝色", "Blue") to Color(0xFF00639B),
+        strings("绿色", "Green") to Color(0xFF2E7D32),
+        strings("紫色", "Purple") to Color(0xFF7B1FA2),
+        strings("橙色", "Orange") to Color(0xFFEF6C00),
+    )
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(start = 16.dp, top = 16.dp, end = 16.dp, bottom = EDITOR_DOCK_OVERLAP + 16.dp),
+        verticalArrangement = Arrangement.Top,
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            TextButton(onClick = { onColor(null) }) {
+                Text(strings("默认", "Default"))
+            }
+            colors.forEach { (label, color) ->
+                IconButton(
+                    onClick = { onColor(color) },
+                    modifier = Modifier.semantics { contentDescription = label },
+                ) {
+                    Box(
+                        Modifier
+                            .size(32.dp)
+                            .clip(RoundedCornerShape(50))
+                            .background(color),
+                    )
+                }
+            }
         }
     }
 }
@@ -888,7 +1189,7 @@ private const val OBJECT_DELETE_MARKER = "\u2060"
 internal fun normalizeEditorFlow(document: NoteDocument): NoteDocument {
     val normalized = buildList {
         document.blocks.forEachIndexed { index, block ->
-            add(if (block.type == BlockType.TEXT && block.textKind == TextKind.TITLE) block.copy(textKind = TextKind.BODY) else block)
+            add(block)
             if (block.type != BlockType.TEXT) {
                 val next = document.blocks.getOrNull(index + 1)
                 if (next?.type != BlockType.TEXT || next.textKind == TextKind.CHECKLIST) {
@@ -1029,7 +1330,6 @@ private fun InlineTextBlockEditor(
     }
     LaunchedEffect(requestFocus) {
         if (requestFocus) {
-            value = value.copy(selection = TextRange(value.text.length))
             requester.requestFocus()
             keyboard?.show()
             onFocusRequestConsumed()
@@ -1459,60 +1759,44 @@ private fun adjustSpans(oldText: String, newText: String, spans: List<RichSpan>)
     }
 }
 
-private fun applyFormat(block: NoteBlock, selection: TextRange, kind: FormatKind, color: Color?): NoteBlock {
+internal fun applyFormat(block: NoteBlock, selection: TextRange, kind: FormatKind, color: Color?): NoteBlock {
     val start = selection.min.coerceIn(0, block.text.length)
     val end = selection.max.coerceIn(start, block.text.length)
     if (start == end) return block
-    if (kind == FormatKind.COLOR) {
-        val cleared = block.spans.flatMap { span ->
-            if (span.end <= start || span.start >= end || span.colorArgb == null) return@flatMap listOf(span)
-            buildList {
-                if (span.start < start) add(span.copy(end = start))
-                val middleStart = maxOf(span.start, start)
-                val middleEnd = minOf(span.end, end)
-                span.copy(colorArgb = null).takeIf { !it.emptyStyle() && middleStart < middleEnd }?.let {
-                    add(it.copy(start = middleStart, end = middleEnd))
-                }
-                if (span.end > end) add(span.copy(start = end))
-            }
+
+    val breakpoints = sortedSetOf(0, block.text.length, start, end).apply {
+        block.spans.forEach { span ->
+            add(span.start.coerceIn(0, block.text.length))
+            add(span.end.coerceIn(0, block.text.length))
         }
-        return block.copy(
-            spans = if (color == null) cleared
-            else cleared + RichSpan(start, end, colorArgb = color.toArgb().toLong()),
+    }.toList()
+    val segments = breakpoints.zipWithNext().mapNotNull { (segmentStart, segmentEnd) ->
+        if (segmentStart >= segmentEnd) return@mapNotNull null
+        val covering = block.spans.filter { it.start < segmentEnd && it.end > segmentStart }
+        RichSpan(
+            start = segmentStart,
+            end = segmentEnd,
+            bold = covering.any(RichSpan::bold),
+            italic = covering.any(RichSpan::italic),
+            underline = covering.any(RichSpan::underline),
+            strikeThrough = covering.any(RichSpan::strikeThrough),
+            colorArgb = covering.lastOrNull { it.colorArgb != null }?.colorArgb,
         )
     }
-    val enabled = block.spans.any { span ->
-        span.start <= start && span.end >= end && when (kind) {
-            FormatKind.BOLD -> span.bold
-            FormatKind.ITALIC -> span.italic
-            FormatKind.UNDERLINE -> span.underline
-            FormatKind.STRIKE -> span.strikeThrough
-            FormatKind.COLOR -> false
+    val selectedSegments = segments.filter { it.start >= start && it.end <= end }
+    val enableBooleanFormat = kind != FormatKind.COLOR && selectedSegments.any { !it.has(kind) }
+    val selectedColor = color?.toArgb()?.toLong()
+
+    val formatted = segments.map { span ->
+        if (span.start < start || span.end > end) {
+            span
+        } else if (kind == FormatKind.COLOR) {
+            span.copy(colorArgb = selectedColor)
+        } else {
+            span.with(kind, enableBooleanFormat)
         }
     }
-    if (!enabled) {
-        val added = when (kind) {
-            FormatKind.BOLD -> RichSpan(start, end, bold = true)
-            FormatKind.ITALIC -> RichSpan(start, end, italic = true)
-            FormatKind.UNDERLINE -> RichSpan(start, end, underline = true)
-            FormatKind.STRIKE -> RichSpan(start, end, strikeThrough = true)
-            FormatKind.COLOR -> error("handled above")
-        }
-        return block.copy(spans = block.spans + added)
-    }
-    val stripped = block.spans.flatMap { span ->
-        if (span.end <= start || span.start >= end || !span.has(kind)) return@flatMap listOf(span)
-        buildList {
-            if (span.start < start) add(span.copy(end = start))
-            val middleStart = maxOf(span.start, start)
-            val middleEnd = minOf(span.end, end)
-            span.without(kind).takeIf { !it.emptyStyle() && middleStart < middleEnd }?.let {
-                add(it.copy(start = middleStart, end = middleEnd))
-            }
-            if (span.end > end) add(span.copy(start = end))
-        }
-    }
-    return block.copy(spans = stripped)
+    return block.copy(spans = mergeAdjacentSpans(formatted.filterNot(RichSpan::emptyStyle)))
 }
 
 private fun RichSpan.has(kind: FormatKind): Boolean = when (kind) {
@@ -1523,16 +1807,34 @@ private fun RichSpan.has(kind: FormatKind): Boolean = when (kind) {
     FormatKind.COLOR -> colorArgb != null
 }
 
-private fun RichSpan.without(kind: FormatKind): RichSpan = when (kind) {
-    FormatKind.BOLD -> copy(bold = false)
-    FormatKind.ITALIC -> copy(italic = false)
-    FormatKind.UNDERLINE -> copy(underline = false)
-    FormatKind.STRIKE -> copy(strikeThrough = false)
-    FormatKind.COLOR -> copy(colorArgb = null)
+private fun RichSpan.with(kind: FormatKind, enabled: Boolean): RichSpan = when (kind) {
+    FormatKind.BOLD -> copy(bold = enabled)
+    FormatKind.ITALIC -> copy(italic = enabled)
+    FormatKind.UNDERLINE -> copy(underline = enabled)
+    FormatKind.STRIKE -> copy(strikeThrough = enabled)
+    FormatKind.COLOR -> this
 }
 
 private fun RichSpan.emptyStyle(): Boolean =
     !bold && !italic && !underline && !strikeThrough && colorArgb == null
+
+private fun mergeAdjacentSpans(spans: List<RichSpan>): List<RichSpan> = buildList {
+    spans.forEach { span ->
+        val previous = lastOrNull()
+        if (previous != null && previous.end == span.start && previous.sameStyleAs(span)) {
+            this[lastIndex] = previous.copy(end = span.end)
+        } else {
+            add(span)
+        }
+    }
+}
+
+private fun RichSpan.sameStyleAs(other: RichSpan): Boolean =
+    bold == other.bold &&
+        italic == other.italic &&
+        underline == other.underline &&
+        strikeThrough == other.strikeThrough &&
+        colorArgb == other.colorArgb
 
 private fun TextRange.constrain(minimum: Int, maximum: Int): TextRange =
     TextRange(start.coerceIn(minimum, maximum), end.coerceIn(minimum, maximum))

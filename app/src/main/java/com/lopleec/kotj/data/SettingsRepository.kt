@@ -6,6 +6,7 @@ import androidx.core.content.edit
 enum class AppLanguage { SYSTEM, CHINESE, ENGLISH }
 enum class ThemeMode { SYSTEM, LIGHT, DARK }
 enum class NoteSort { UPDATED, TITLE }
+enum class DriveStorageMode { LOCAL_AND_CLOUD, CLOUD_ONLY }
 
 data class AppSettings(
     val language: AppLanguage = AppLanguage.SYSTEM,
@@ -16,6 +17,8 @@ data class AppSettings(
     val useSystemUnlock: Boolean = false,
     val noteSort: NoteSort = NoteSort.UPDATED,
     val groupNotesByDate: Boolean = false,
+    val googleDriveBackupEnabled: Boolean = false,
+    val driveStorageMode: DriveStorageMode = DriveStorageMode.LOCAL_AND_CLOUD,
 )
 
 class SettingsRepository(context: Context) {
@@ -30,6 +33,11 @@ class SettingsRepository(context: Context) {
         useSystemUnlock = preferences.getBoolean("use_system_unlock", false),
         noteSort = enumValueOrDefault(preferences.getString("note_sort", null), NoteSort.UPDATED),
         groupNotesByDate = preferences.getBoolean("group_notes_by_date", false),
+        googleDriveBackupEnabled = preferences.getBoolean("google_drive_backup_enabled", false),
+        driveStorageMode = enumValueOrDefault(
+            preferences.getString("drive_storage_mode", null),
+            DriveStorageMode.LOCAL_AND_CLOUD,
+        ),
     )
 
     fun save(settings: AppSettings) {
@@ -43,8 +51,13 @@ class SettingsRepository(context: Context) {
             putBoolean("use_system_unlock", settings.useSystemUnlock)
             putString("note_sort", settings.noteSort.name)
             putBoolean("group_notes_by_date", settings.groupNotesByDate)
+            putBoolean("google_drive_backup_enabled", settings.googleDriveBackupEnabled)
+            putString("drive_storage_mode", settings.driveStorageMode.name)
         }
     }
+
+    fun isGoogleDriveBackupEnabled(): Boolean =
+        preferences.getBoolean("google_drive_backup_enabled", false)
 
     private inline fun <reified T : Enum<T>> enumValueOrDefault(value: String?, default: T): T =
         enumValues<T>().firstOrNull { it.name == value } ?: default

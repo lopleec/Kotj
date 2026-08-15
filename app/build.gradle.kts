@@ -31,8 +31,8 @@ android {
         applicationId = "com.lopleec.kotj"
         minSdk = 26
         targetSdk = 36
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     buildFeatures {
@@ -84,5 +84,9 @@ dependencies {
     // 2.11.0 requires compileSdk 37 / AGP 9.1; this project intentionally targets Android 16.
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.10.0")
     implementation("androidx.lifecycle:lifecycle-viewmodel-ktx:2.10.0")
+    implementation("androidx.work:work-runtime-ktx:2.11.2")
+    implementation("com.google.android.gms:play-services-auth:21.6.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.11.0")
+
 }
