@@ -1349,7 +1349,11 @@ private fun InlineTextBlockEditor(
             if (hasPreviousObject && !incoming.text.startsWith(OBJECT_DELETE_MARKER)) {
                 onDeletePreviousObject()
                 val clean = incoming.text.removePrefix(OBJECT_DELETE_MARKER)
-                value = TextFieldValue(clean, incoming.selection.constrain(0, clean.length))
+                value = incoming.copy(
+                    text = clean,
+                    selection = incoming.selection.constrain(0, clean.length),
+                    composition = incoming.composition?.constrain(0, clean.length),
+                )
                 onChange(block.copy(text = clean, spans = adjustSpans(block.text, clean, block.spans)))
                 return@BasicTextField
             }
@@ -1357,9 +1361,12 @@ private fun InlineTextBlockEditor(
             val incomingPlain = incoming.withoutLeadingMarker(marker)
             val transformed = transformUnifiedInput(previousPlain, incomingPlain)
             val displayText = marker + transformed.text
-            value = TextFieldValue(
-                displayText,
-                TextRange(transformed.selection.start + marker.length, transformed.selection.end + marker.length),
+            // The composition range belongs to the IME. Dropping it commits every intermediate
+            // pinyin letter, which duplicates input and prevents Chinese candidates from forming.
+            value = transformed.copy(
+                text = displayText,
+                selection = transformed.selection.shiftRight(marker.length),
+                composition = transformed.composition?.shiftRight(marker.length),
             )
             val changed = block.copy(
                 text = transformed.text,
@@ -1520,6 +1527,8 @@ private fun TextRange.shiftLeft(offset: Int): TextRange = TextRange(
     (start - offset).coerceAtLeast(0),
     (end - offset).coerceAtLeast(0),
 )
+
+private fun TextRange.shiftRight(offset: Int): TextRange = TextRange(start + offset, end + offset)
 
 private val editorLineHeightStyle = LineHeightStyle(
     alignment = LineHeightStyle.Alignment.Center,
