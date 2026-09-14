@@ -3,7 +3,7 @@
 </p>
 
 <div align="center">
-  <img src="docs/readme-icon.png" width="112" alt="Kotj icon">
+  <img src="docs/readme-icon.svg" width="112" alt="Kotj icon">
   <h1>Kotj</h1>
   <p><strong>A complete, local-first notes app for Android</strong></p>
   <p>Material Design 3 · iOS Notes-inspired structure · Rich text editing · Local encryption</p>

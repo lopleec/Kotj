@@ -1,12 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
-<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item
-        android:bottom="18dp"
-        android:left="18dp"
-        android:right="18dp"
-        android:top="18dp">
-        <bitmap
-            android:gravity="fill"
-            android:src="@drawable/ic_launcher_source" />
-    </item>
-</layer-list>
+<!-- The supplied artwork is full bleed. Scale with the drawable bounds: fixed dp
+     insets make small system surfaces, including biometric prompts, crop or shrink it. -->
+<bitmap xmlns:android="http://schemas.android.com/apk/res/android"
+    android:filter="true"
+    android:gravity="fill"
+    android:src="@drawable/ic_launcher_source" />

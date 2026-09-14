@@ -3,7 +3,7 @@
 </p>
 
 <div align="center">
-  <img src="docs/readme-icon.png" width="112" alt="Kotj 图标">
+  <img src="docs/readme-icon.svg" width="112" alt="Kotj 图标">
   <h1>Kotj</h1>
   <p><strong>面向 Android 的完整本地备忘录</strong></p>
   <p>Material Design 3 界面 · 类 iOS 备忘录结构 · 丰富文本编辑 · 本地加密</p>
