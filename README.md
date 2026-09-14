@@ -14,9 +14,9 @@
   [![GPL-3.0](https://img.shields.io/github/license/lopleec/Kotj)](LICENSE)
 </div>
 
-Kotj is a full-featured native notes app built for Android. It takes inspiration from the clear information architecture and editing flow of Apple Notes while using Jetpack Compose and Material Design 3 to feel at home on Android—not as a simple visual clone of iOS.
+Kotj is a full-featured native Android notes app with a clean Material Design 3 interface. Its folders, note lists, and editing flow take inspiration from iOS Notes, with Kotlin and Jetpack Compose bringing the experience to Android.
 
-From quick thoughts to long, image-rich documents, Kotj includes rich text, images, tables, checklists, folders, global search, recently deleted items, encryption, and multi-format import and export. Kotj remains local-first by default. An optional experimental Google Drive backup can be enabled explicitly; while it is off, Kotj performs no Google sign-in, cloud request, or backup background work.
+Write a quick thought or a longer document with rich text, images, tables, and checklists. Keep notes organized with folders, search, and pinning, and take them with you through multi-format export. Everyday use is local and requires no account; encrypted Google Drive backup is an optional experimental feature.
 
 ## Highlights
 
@@ -45,24 +45,16 @@ Download the latest formally signed APK from [GitHub Releases](https://github.co
 - Android 8.0 (API 26) or later
 - Package name: `com.lopleec.kotj`
 - Android may ask you to allow your browser or file manager to install unknown apps
-- A formally signed build cannot replace an older Debug build because their signatures differ; export important notes before migrating
-
-## What's new in 1.2.0
-
-- Optional automatic Google Drive backup in the private `appDataFolder`, disabled by default
-- Passwordless recovery through the authorized Google Account: a fresh installation can discover, decrypt, and merge its existing backup
-- Non-destructive local/cloud merge: unique notes on both sides are retained, while conflicts use the newer note and keep the local copy on timestamp ties
-- Stale-device protection checks the remote revision before upload so an older installation cannot silently replace a newer cloud snapshot
-- Account switching now keeps the current connection intact until the replacement account is selected, authorized, and checked; cancelling makes no changes
-- Refined keyboard-attached editor drawers, combinable underline and strikethrough, reusable title styles on any line, and improved Material 3 motion and spacing
+- Updates signed with the same key can be installed over the existing app to retain local data
+- Debug and official builds use different signatures; export important notes before switching between them
 
 ## Complete feature set
 
 ### Editing
 
 - Start with a blank canvas: any line can use body or title styling, and title styles can be used more than once anywhere in a note
-- Bold, italic, underline, strikethrough, and text color
-- Body text, headings, quotes, numbered lists, bullet lists, and native checkbox tasks
+- Bold, italic, underline, strikethrough, and text color, including combined underline and strikethrough
+- Body text, titles, headings, subheadings, numbered lists, bullet lists, and native checkbox tasks
 - Tables, dividers, and images through the system Photo Picker
 - Images retain their original aspect ratio, and text can continue directly after images or other embedded items
 - Undo, redo, find in note, result highlighting, and navigation
@@ -82,13 +74,20 @@ Download the latest formally signed APK from [GitHub Releases](https://github.co
 - Export DOCX, Markdown, and plain text
 - DOCX images keep their aspect ratio and are written as a stream to reduce memory use for large documents
 
+### Appearance and language
+
+- English and Simplified Chinese, with a system-language option
+- Light, dark, and system-following themes
+- Android 12+ dynamic color
+- Configurable note sorting, date grouping, and Recently Deleted retention
+
 ### Optional Google Drive backup (experimental)
 
-- Disabled by default; the original local editing and storage path remains unchanged while it is off
+- Enable it in **Settings → Advanced settings (experimental)**; it is disabled by default, and local use requires no Google sign-in
 - Uses the hidden Drive `appDataFolder` with the minimum `drive.appdata` scope
 - Automatic, debounced backups after local changes plus periodic connected-device backup work
 - AES-256-GCM encrypted snapshots containing the note database, folders, deletion state, and attachments; the portable recovery key is stored in the same account's private app-data folder
-- Resumable uploads for image-rich backups, manual **Back up now**, and Google Account switching
+- Resumable uploads for image-rich backups, manual **Back up now**, and Google Account switching; cancelling an account switch preserves the current connection
 - On a new or reinstalled device, Kotj detects and pairs the existing snapshot with its account recovery key, blocks uploads until recovery finishes, and merges local and cloud notes after Google authorization without a separate backup password
 - Password-era backups are migrated automatically by their original installation after its next successful backup; an unmigrated legacy backup cannot be recovered passwordlessly on a different installation
 - Merge keeps content unique to either side; notes sharing an ID use the newer version (ties stay local), while folders, Recently Deleted state, and attachments follow the selected note version
@@ -141,7 +140,10 @@ cd Kotj
 
 The Debug APK is generated at `app/build/outputs/apk/debug/app-debug.apk`.
 
-## Build a signed release
+For Google Drive in your own build, register an Android OAuth client for `com.lopleec.kotj` and your signing certificate SHA-1 in the Google Cloud project used by the app. Android OAuth client IDs and project IDs are public application configuration; OAuth client secrets and signing credentials must remain private.
+
+<details>
+<summary>Build a signed release</summary>
 
 Release builds enable R8 optimization, obfuscation, and resource shrinking, and never fall back to a Debug signature. Store the keystore outside the project and provide these values through the user-level `~/.gradle/gradle.properties` file or environment variables with the same names:
 
@@ -157,6 +159,8 @@ KOTJ_RELEASE_KEY_PASSWORD=your-key-password
 ```
 
 Without complete signing configuration, Gradle produces unsigned artifacts that are not ready for distribution or direct installation. Never commit keystores, passwords, `local.properties`, or user-level Gradle configuration.
+
+</details>
 
 ## Project structure
 
@@ -180,8 +184,6 @@ Issues and pull requests are welcome. Before submitting code, make sure that:
 3. New features account for both English and Chinese, light and dark themes, and accessibility descriptions.
 4. Changes to storage or encryption formats remain backward compatible and document their migration strategy.
 
-Google Drive authorization also requires an Android OAuth client registered for `com.lopleec.kotj` and the signing certificate SHA-1 in the same Google Cloud project. Android OAuth client IDs and project IDs are public application configuration; never commit OAuth client secrets, keystores, or signing passwords.
-
 ## License
 
-Kotj is released under the [GNU General Public License v3.0](LICENSE). Distributions of modified versions must follow the GPL-3.0 source disclosure and license preservation requirements.
+Kotj is licensed under the [GNU General Public License v3.0](LICENSE). See the included license for its terms.
